@@ -1,0 +1,1755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ConstructHub - Job & Service Marketplace</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#f59e0b',
+                        secondary: '#1e3a5f',
+                        accent: '#10b981',
+                        dark: '#111827',
+                        light: '#f3f4f6'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; }
+        .hide { display: none !important; }
+        .modal-overlay { background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); }
+        .card-hover { transition: all 0.3s ease; }
+        .card-hover:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,0.15); }
+        .sidebar-link.active { background: linear-gradient(90deg, #f59e0b 0%, #d97706 100%); color: white; }
+        .status-open { background: #d1fae5; color: #065f46; }
+        .status-closed { background: #fee2e2; color: #991b1b; }
+        .status-pending { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #d1fae5; color: #065f46; }
+        .status-rejected { background: #fee2e2; color: #991b1b; }
+        .image-preview { object-fit: cover; }
+        .notification { animation: slideIn 0.3s ease; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        .loader { border: 3px solid #f3f3f3; border-top: 3px solid #f59e0b; border-radius: 50%; width: 24px; height: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        input:focus, select:focus, textarea:focus { outline: none; ring: 2px; ring-color: #f59e0b; }
+        .nav-mobile { position: fixed; bottom: 0; left: 0; right: 0; z-index: 50; }
+        @media (min-width: 768px) { .nav-mobile { display: none; } }
+        .photo-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 8px; }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div id="app"></div>
+    <div id="notifications" class="fixed top-4 right-4 z-50 space-y-2"></div>
+    <div id="modal" class="hide fixed inset-0 z-50 flex items-center justify-center modal-overlay"></div>
+
+    <script>
+    // ============================================
+    // DATABASE SIMULATION (localStorage)
+    // ============================================
+    const DB = {
+        init() {
+            if (!localStorage.getItem('ch_initialized')) {
+                localStorage.setItem('ch_users', JSON.stringify([
+                    { id: 'admin1', name: 'Admin User', email: 'admin@constructhub.com', password_hash: this.hash('admin123'), role: 'admin', phone: '+1234567890', company: 'ConstructHub Inc.', location: 'New York, USA', profile_completed: true, created_at: new Date().toISOString() }
+                ]));
+                localStorage.setItem('ch_jobs', JSON.stringify([]));
+                localStorage.setItem('ch_listings', JSON.stringify([]));
+                localStorage.setItem('ch_applications', JSON.stringify([]));
+                localStorage.setItem('ch_photos', JSON.stringify([]));
+                localStorage.setItem('ch_announcements', JSON.stringify([]));
+                localStorage.setItem('ch_initialized', 'true');
+                this.seedData();
+            }
+        },
+        hash(str) { let hash = 0; for (let i = 0; i < str.length; i++) { hash = ((hash << 5) - hash) + str.charCodeAt(i); hash |= 0; } return hash.toString(); },
+        generateId() { return Date.now().toString(36) + Math.random().toString(36).substr(2); },
+        get(key) { return JSON.parse(localStorage.getItem('ch_' + key) || '[]'); },
+        set(key, data) { localStorage.setItem('ch_' + key, JSON.stringify(data)); },
+        seedData() {
+            const jobs = [
+                { id: this.generateId(), title: 'Excavation Work for Commercial Building', description: 'Looking for experienced excavation team with heavy machinery for a 5000 sqft commercial building foundation.', industry_category: 'Construction', required_services: 'Excavators, Backhoes', budget: '$15,000 - $25,000', location: 'Austin, TX', deadline: '2026-02-28', status: 'open', created_at: new Date().toISOString() },
+                { id: this.generateId(), title: 'Crane Services for Steel Structure', description: 'Need mobile crane services for steel structure installation. Project duration: 2 weeks.', industry_category: 'Construction', required_services: 'Mobile Crane, Tower Crane', budget: '$8,000 - $12,000', location: 'Houston, TX', deadline: '2026-03-15', status: 'open', created_at: new Date().toISOString() },
+                { id: this.generateId(), title: 'Concrete Pumping Services', description: 'Concrete pumping required for high-rise building project. Estimated 500 cubic meters.', industry_category: 'Construction', required_services: 'Concrete Pump Truck', budget: '$5,000 - $7,000', location: 'Dallas, TX', deadline: '2026-02-20', status: 'open', created_at: new Date().toISOString() }
+            ];
+            this.set('jobs', jobs);
+            const announcements = [
+                { id: this.generateId(), title: 'Welcome to ConstructHub!', content: 'We are excited to launch our new job and service marketplace for the construction industry.', created_at: new Date().toISOString() },
+                { id: this.generateId(), title: 'New Features Coming Soon', content: 'Stay tuned for our upcoming mobile app and enhanced search features.', created_at: new Date().toISOString() }
+            ];
+            this.set('announcements', announcements);
+        }
+    };
+
+    // ============================================
+    // AUTHENTICATION
+    // ============================================
+    const Auth = {
+        currentUser: null,
+        token: null,
+        init() {
+            const stored = localStorage.getItem('ch_session');
+            if (stored) {
+                const session = JSON.parse(stored);
+                this.currentUser = session.user;
+                this.token = session.token;
+            }
+        },
+        login(email, password) {
+            const users = DB.get('users');
+            const user = users.find(u => u.email === email && u.password_hash === DB.hash(password));
+            if (user) {
+                this.currentUser = user;
+                this.token = 'jwt_' + DB.generateId();
+                localStorage.setItem('ch_session', JSON.stringify({ user, token: this.token }));
+                return { success: true, user };
+            }
+            return { success: false, error: 'Invalid credentials' };
+        },
+        register(data) {
+            const users = DB.get('users');
+            if (users.find(u => u.email === data.email)) {
+                return { success: false, error: 'Email already registered' };
+            }
+            const user = {
+                id: DB.generateId(),
+                name: data.name,
+                email: data.email,
+                password_hash: DB.hash(data.password),
+                role: 'user',
+                phone: data.phone || '',
+                company: data.company || '',
+                location: data.location || '',
+                profile_completed: !!(data.name && data.phone && data.location),
+                created_at: new Date().toISOString()
+            };
+            users.push(user);
+            DB.set('users', users);
+            this.currentUser = user;
+            this.token = 'jwt_' + DB.generateId();
+            localStorage.setItem('ch_session', JSON.stringify({ user, token: this.token }));
+            return { success: true, user };
+        },
+        googleSignIn(googleUser) {
+            const users = DB.get('users');
+            let user = users.find(u => u.email === googleUser.email);
+            if (!user) {
+                user = {
+                    id: DB.generateId(),
+                    name: googleUser.name,
+                    email: googleUser.email,
+                    password_hash: '',
+                    role: 'user',
+                    phone: '',
+                    company: '',
+                    location: '',
+                    profile_completed: false,
+                    google_id: googleUser.sub,
+                    created_at: new Date().toISOString()
+                };
+                users.push(user);
+                DB.set('users', users);
+            }
+            this.currentUser = user;
+            this.token = 'jwt_' + DB.generateId();
+            localStorage.setItem('ch_session', JSON.stringify({ user, token: this.token }));
+            return { success: true, user, needsProfile: !user.profile_completed };
+        },
+        completeProfile(data) {
+            const users = DB.get('users');
+            const idx = users.findIndex(u => u.id === this.currentUser.id);
+            if (idx !== -1) {
+                users[idx] = { ...users[idx], ...data, profile_completed: true };
+                DB.set('users', users);
+                this.currentUser = users[idx];
+                localStorage.setItem('ch_session', JSON.stringify({ user: this.currentUser, token: this.token }));
+                return { success: true };
+            }
+            return { success: false };
+        },
+        logout() {
+            this.currentUser = null;
+            this.token = null;
+            localStorage.removeItem('ch_session');
+        },
+        isAdmin() { return this.currentUser?.role === 'admin'; },
+        isLoggedIn() { return !!this.currentUser; },
+        canPost() { return this.currentUser?.profile_completed; }
+    };
+
+    // ============================================
+    // UTILITIES
+    // ============================================
+    const Utils = {
+        notify(message, type = 'success') {
+            const colors = { success: 'bg-green-500', error: 'bg-red-500', info: 'bg-blue-500', warning: 'bg-yellow-500' };
+            const div = document.createElement('div');
+            div.className = `notification ${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg flex items-center gap-2`;
+            div.innerHTML = `<i class="fas fa-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-circle' : 'info-circle'}"></i><span>${message}</span>`;
+            document.getElementById('notifications').appendChild(div);
+            setTimeout(() => div.remove(), 3000);
+        },
+        formatDate(date) { return new Date(date).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }); },
+        timeAgo(date) {
+            const diff = Date.now() - new Date(date).getTime();
+            const mins = Math.floor(diff / 60000);
+            if (mins < 60) return `${mins}m ago`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `${hours}h ago`;
+            const days = Math.floor(hours / 24);
+            return `${days}d ago`;
+        },
+        compressImage(file, maxWidth = 800) {
+            return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const img = new Image();
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        const ratio = Math.min(maxWidth / img.width, maxWidth / img.height);
+                        canvas.width = img.width * ratio;
+                        canvas.height = img.height * ratio;
+                        const ctx = canvas.getContext('2d');
+                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        resolve(canvas.toDataURL('image/jpeg', 0.7));
+                    };
+                    img.src = e.target.result;
+                };
+                reader.readAsDataURL(file);
+            });
+        }
+    };
+
+    // ============================================
+    // INDUSTRY CATEGORIES
+    // ============================================
+    const INDUSTRIES = [
+        'Construction', 'Heavy Machinery', 'Transport & Logistics', 'Earthworks & Excavation',
+        'Crane Services', 'Concrete Services', 'Industrial Services', 'Agriculture',
+        'Maintenance Services', 'General Contracting', 'Other'
+    ];
+
+    const MACHINE_TYPES = [
+        'Excavator', 'Bulldozer', 'Crane (Mobile)', 'Crane (Tower)', 'Backhoe', 'Loader',
+        'Dump Truck', 'Concrete Mixer', 'Concrete Pump', 'Forklift', 'Grader', 'Roller',
+        'Paver', 'Drilling Rig', 'Generator', 'Compressor', 'Scaffolding', 'Other'
+    ];
+
+    // ============================================
+    // ROUTER
+    // ============================================
+    const Router = {
+        routes: {},
+        current: '',
+        register(path, handler) { this.routes[path] = handler; },
+        navigate(path) {
+            window.location.hash = path;
+        },
+        init() {
+            window.addEventListener('hashchange', () => this.handleRoute());
+            this.handleRoute();
+        },
+        handleRoute() {
+            const hash = window.location.hash.slice(1) || '/';
+            const [path, ...params] = hash.split('/').filter(Boolean);
+            this.current = '/' + (path || '');
+            const handler = this.routes[this.current] || this.routes['/'];
+            if (handler) handler(params.join('/'));
+        }
+    };
+
+    // ============================================
+    // COMPONENTS
+    // ============================================
+    const Components = {
+        header(title, showBack = false) {
+            return `
+                <header class="bg-secondary text-white px-4 py-4 sticky top-0 z-40 shadow-lg">
+                    <div class="max-w-7xl mx-auto flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            ${showBack ? `<button onclick="history.back()" class="p-2 hover:bg-white/10 rounded-lg"><i class="fas fa-arrow-left"></i></button>` : ''}
+                            <h1 class="text-xl font-bold">${title}</h1>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            ${Auth.isLoggedIn() ? `
+                                <span class="hidden md:block text-sm">${Auth.currentUser.name}</span>
+                                <button onclick="App.logout()" class="p-2 hover:bg-white/10 rounded-lg" title="Logout">
+                                    <i class="fas fa-sign-out-alt"></i>
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                </header>
+            `;
+        },
+        mobileNav() {
+            if (!Auth.isLoggedIn()) return '';
+            const isAdmin = Auth.isAdmin();
+            const links = isAdmin ? [
+                { path: '/admin', icon: 'home', label: 'Dashboard' },
+                { path: '/admin-jobs', icon: 'briefcase', label: 'Jobs' },
+                { path: '/admin-users', icon: 'users', label: 'Users' },
+                { path: '/admin-listings', icon: 'list', label: 'Listings' },
+                { path: '/admin-news', icon: 'bullhorn', label: 'News' }
+            ] : [
+                { path: '/dashboard', icon: 'home', label: 'Home' },
+                { path: '/jobs', icon: 'briefcase', label: 'Jobs' },
+                { path: '/my-listings', icon: 'truck', label: 'Machines' },
+                { path: '/applications', icon: 'file-alt', label: 'Applied' },
+                { path: '/profile', icon: 'user', label: 'Profile' }
+            ];
+            return `
+                <nav class="nav-mobile bg-white border-t shadow-lg">
+                    <div class="flex justify-around py-2">
+                        ${links.map(l => `
+                            <a href="#${l.path}" class="flex flex-col items-center p-2 ${Router.current === l.path ? 'text-primary' : 'text-gray-500'}">
+                                <i class="fas fa-${l.icon} text-lg"></i>
+                                <span class="text-xs mt-1">${l.label}</span>
+                            </a>
+                        `).join('')}
+                    </div>
+                </nav>
+            `;
+        },
+        sidebar(isAdmin) {
+            const links = isAdmin ? [
+                { path: '/admin', icon: 'tachometer-alt', label: 'Dashboard' },
+                { path: '/admin-jobs', icon: 'briefcase', label: 'Manage Jobs' },
+                { path: '/admin-users', icon: 'users', label: 'Manage Users' },
+                { path: '/admin-listings', icon: 'list', label: 'Listings' },
+                { path: '/admin-applications', icon: 'file-alt', label: 'Applications' },
+                { path: '/admin-news', icon: 'bullhorn', label: 'Announcements' },
+                { path: '/admin-analytics', icon: 'chart-bar', label: 'Analytics' }
+            ] : [
+                { path: '/dashboard', icon: 'home', label: 'Dashboard' },
+                { path: '/jobs', icon: 'briefcase', label: 'Browse Jobs' },
+                { path: '/my-listings', icon: 'truck', label: 'My Machines' },
+                { path: '/applications', icon: 'file-alt', label: 'My Applications' },
+                { path: '/profile', icon: 'user-cog', label: 'Profile' }
+            ];
+            return `
+                <aside class="hidden md:flex flex-col w-64 bg-secondary min-h-screen p-4">
+                    <div class="flex items-center gap-3 mb-8">
+                        <div class="w-10 h-10 bg-primary rounded-lg flex items-center justify-center">
+                            <i class="fas fa-hard-hat text-white text-xl"></i>
+                        </div>
+                        <span class="text-white font-bold text-lg">ConstructHub</span>
+                    </div>
+                    <nav class="flex-1 space-y-2">
+                        ${links.map(l => `
+                            <a href="#${l.path}" class="sidebar-link flex items-center gap-3 px-4 py-3 rounded-lg text-gray-300 hover:bg-white/10 transition ${Router.current === l.path ? 'active' : ''}">
+                                <i class="fas fa-${l.icon} w-5"></i>
+                                <span>${l.label}</span>
+                            </a>
+                        `).join('')}
+                    </nav>
+                    <button onclick="App.logout()" class="flex items-center gap-3 px-4 py-3 text-gray-300 hover:bg-white/10 rounded-lg mt-auto">
+                        <i class="fas fa-sign-out-alt w-5"></i>
+                        <span>Logout</span>
+                    </button>
+                </aside>
+            `;
+        },
+        jobCard(job, showApply = true) {
+            return `
+                <div class="bg-white rounded-xl shadow-md p-5 card-hover">
+                    <div class="flex justify-between items-start mb-3">
+                        <span class="px-3 py-1 bg-blue-100 text-blue-700 text-xs font-medium rounded-full">${job.industry_category}</span>
+                        <span class="status-${job.status} px-3 py-1 text-xs font-medium rounded-full">${job.status}</span>
+                    </div>
+                    <h3 class="font-bold text-lg text-gray-800 mb-2">${job.title}</h3>
+                    <p class="text-gray-600 text-sm mb-4 line-clamp-2">${job.description}</p>
+                    <div class="space-y-2 text-sm text-gray-500 mb-4">
+                        <div class="flex items-center gap-2"><i class="fas fa-map-marker-alt w-4 text-primary"></i>${job.location}</div>
+                        <div class="flex items-center gap-2"><i class="fas fa-tools w-4 text-primary"></i>${job.required_services}</div>
+                        ${job.budget ? `<div class="flex items-center gap-2"><i class="fas fa-dollar-sign w-4 text-primary"></i>${job.budget}</div>` : ''}
+                        <div class="flex items-center gap-2"><i class="fas fa-calendar w-4 text-primary"></i>Deadline: ${Utils.formatDate(job.deadline)}</div>
+                    </div>
+                    ${showApply && job.status === 'open' ? `
+                        <button onclick="App.showApplyModal('${job.id}')" class="w-full bg-primary hover:bg-amber-600 text-white py-2 rounded-lg font-medium transition">
+                            Apply Now
+                        </button>
+                    ` : ''}
+                </div>
+            `;
+        },
+        listingCard(listing, showActions = false) {
+            const photos = DB.get('photos').filter(p => p.listing_id === listing.id);
+            const mainPhoto = photos?.image_url || 'https://via.placeholder.com/400x300?text=No+Image';
+            const user = DB.get('users').find(u => u.id === listing.user_id);
+            return `
+                <div class="bg-white rounded-xl shadow-md overflow-hidden card-hover">
+                    <div class="relative h-48">
+                        <img src="${mainPhoto}" class="w-full h-full object-cover" alt="${listing.machine_type}">
+                        <span class="absolute top-3 left-3 px-3 py-1 bg-black/60 text-white text-xs rounded-full">${listing.industry_category}</span>
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg text-gray-800 mb-1">${listing.machine_type}</h3>
+                        ${user ? `<p class="text-sm text-gray-500 mb-2">by ${user.name}</p>` : ''}
+                        <p class="text-gray-600 text-sm mb-3 line-clamp-2">${listing.description || listing.capabilities}</p>
+                        <div class="flex items-center justify-between text-sm text-gray-500">
+                            <span><i class="fas fa-map-marker-alt mr-1 text-primary"></i>${listing.location}</span>
+                            <span class="${listing.availability === 'Available' ? 'text-green-600' : 'text-red-600'}">${listing.availability}</span>
+                        </div>
+                        ${listing.price_range ? `<p class="text-primary font-semibold mt-2">${listing.price_range}</p>` : ''}
+                        ${showActions ? `
+                            <div class="flex gap-2 mt-3">
+                                <button onclick="App.editListing('${listing.id}')" class="flex-1 bg-gray-100 hover:bg-gray-200 py-2 rounded-lg text-sm"><i class="fas fa-edit mr-1"></i>Edit</button>
+                                <button onclick="App.deleteListing('${listing.id}')" class="flex-1 bg-red-100 hover:bg-red-200 text-red-600 py-2 rounded-lg text-sm"><i class="fas fa-trash mr-1"></i>Delete</button>
+                            </div>
+                        ` : ''}
+                    </div>
+                </div>
+            `;
+        },
+        statsCard(icon, label, value, color) {
+            return `
+                <div class="bg-white rounded-xl shadow-md p-5">
+                    <div class="flex items-center gap-4">
+                        <div class="w-12 h-12 rounded-xl bg-${color}-100 flex items-center justify-center">
+                            <i class="fas fa-${icon} text-${color}-600 text-xl"></i>
+                        </div>
+                        <div>
+                            <p class="text-2xl font-bold text-gray-800">${value}</p>
+                            <p class="text-sm text-gray-500">${label}</p>
+                        </div>
+                    </div>
+                </div>
+            `;
+        },
+        select(name, options, value = '', placeholder = 'Select...', required = false) {
+            return `
+                <select name="${name}" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary" ${required ? 'required' : ''}>
+                    <option value="">${placeholder}</option>
+                    ${options.map(o => `<option value="${o}" ${value === o ? 'selected' : ''}>${o}</option>`).join('')}
+                </select>
+            `;
+        },
+        input(type, name, placeholder, value = '', required = false) {
+            return `<input type="${type}" name="${name}" placeholder="${placeholder}" value="${value}" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary" ${required ? 'required' : ''}>`;
+        },
+        textarea(name, placeholder, value = '', rows = 4) {
+            return `<textarea name="${name}" placeholder="${placeholder}" rows="${rows}" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-primary">${value}</textarea>`;
+        }
+    };
+
+    // ============================================
+    // PAGES
+    // ============================================
+    const Pages = {
+        // AUTH PAGES
+        login() {
+            return `
+                <div class="min-h-screen bg-gradient-to-br from-secondary to-gray-900 flex items-center justify-center p-4">
+                    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+                        <div class="text-center mb-8">
+                            <div class="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center mx-auto mb-4">
+                                <i class="fas fa-hard-hat text-white text-3xl"></i>
+                            </div>
+                            <h1 class="text-2xl font-bold text-gray-800">ConstructHub</h1>
+                            <p class="text-gray-500">Job & Service Marketplace</p>
+                        </div>
+                        <form id="loginForm" class="space-y-4">
+                            ${Components.input('email', 'email', 'Email address', '', true)}
+                            ${Components.input('password', 'password', 'Password', '', true)}
+                            <button type="submit" class="w-full bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-semibold transition">
+                                Sign In
+                            </button>
+                        </form>
+                        <div class="relative my-6">
+                            <div class="absolute inset-0 flex items-center"><div class="w-full border-t"></div></div>
+                            <div class="relative flex justify-center text-sm"><span class="bg-white px-4 text-gray-500">or continue with</span></div>
+                        </div>
+                        <div id="googleBtn" class="flex justify-center"></div>
+                        <p class="text-center mt-6 text-gray-600">
+                            Don't have an account? <a href="#/register" class="text-primary font-semibold hover:underline">Sign up</a>
+                        </p>
+                    </div>
+                </div>
+            `;
+        },
+        register() {
+            return `
+                <div class="min-h-screen bg-gradient-to-br from-secondary to-gray-900 flex items-center justify-center p-4">
+                    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+                        <div class="text-center mb-8">
+                            <h1 class="text-2xl font-bold text-gray-800">Create Account</h1>
+                            <p class="text-gray-500">Join ConstructHub today</p>
+                        </div>
+                        <form id="registerForm" class="space-y-4">
+                            ${Components.input('text', 'name', 'Full Name', '', true)}
+                            ${Components.input('email', 'email', 'Email address', '', true)}
+                            ${Components.input('tel', 'phone', 'Phone Number', '', true)}
+                            ${Components.input('text', 'company', 'Company Name (optional)')}
+                            ${Components.input('text', 'location', 'Location', '', true)}
+                            ${Components.input('password', 'password', 'Password (min 6 characters)', '', true)}
+                            <button type="submit" class="w-full bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-semibold transition">
+                                Create Account
+                            </button>
+                        </form>
+                        <p class="text-center mt-6 text-gray-600">
+                            Already have an account? <a href="#/login" class="text-primary font-semibold hover:underline">Sign in</a>
+                        </p>
+                    </div>
+                </div>
+            `;
+        },
+        completeProfile() {
+            return `
+                <div class="min-h-screen bg-gradient-to-br from-secondary to-gray-900 flex items-center justify-center p-4">
+                    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+                        <div class="text-center mb-8">
+                            <div class="w-16 h-16 bg-green-500 rounded-full flex items-center justify-center mx-auto mb-4">
+                                <i class="fas fa-check text-white text-2xl"></i>
+                            </div>
+                            <h1 class="text-2xl font-bold text-gray-800">Complete Your Profile</h1>
+                            <p class="text-gray-500">Just a few more details to get started</p>
+                        </div>
+                        <form id="profileForm" class="space-y-4">
+                            ${Components.input('text', 'name', 'Full Name', Auth.currentUser?.name || '', true)}
+                            ${Components.input('tel', 'phone', 'Phone Number', '', true)}
+                            ${Components.input('text', 'company', 'Company Name (optional)')}
+                            ${Components.input('text', 'location', 'Your Location', '', true)}
+                            <button type="submit" class="w-full bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-semibold transition">
+                                Complete Profile
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        },
+
+        // USER PAGES
+        userDashboard() {
+            const jobs = DB.get('jobs').filter(j => j.status === 'open').slice(0, 3);
+            const announcements = DB.get('announcements').slice(0, 2);
+            const myListings = DB.get('listings').filter(l => l.user_id === Auth.currentUser.id);
+            const myApps = DB.get('applications').filter(a => a.user_id === Auth.currentUser.id);
+            
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(false)}
+                    <div class="flex-1">
+                        ${Components.header('Dashboard')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto space-y-6">
+                                <div class="bg-gradient-to-r from-primary to-amber-600 rounded-2xl p-6 text-white">
+                                    <h2 class="text-2xl font-bold mb-2">Welcome back, ${Auth.currentUser.name}!</h2>
+                                    <p class="opacity-90">Find jobs and showcase your machinery services.</p>
+                                </div>
+                                
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    ${Components.statsCard('truck', 'My Listings', myListings.length, 'blue')}
+                                    ${Components.statsCard('file-alt', 'Applications', myApps.length, 'green')}
+                                    ${Components.statsCard('briefcase', 'Open Jobs', DB.get('jobs').filter(j => j.status === 'open').length, 'amber')}
+                                    ${Components.statsCard('check-circle', 'Approved', myApps.filter(a => a.status === 'approved').length, 'purple')}
+                                </div>
+
+                                ${announcements.length ? `
+                                    <div class="bg-blue-50 border-l-4 border-blue-500 rounded-lg p-4">
+                                        <h3 class="font-semibold text-blue-800 mb-2"><i class="fas fa-bullhorn mr-2"></i>Latest Announcements</h3>
+                                        ${announcements.map(a => `<p class="text-blue-700 text-sm"><strong>${a.title}:</strong> ${a.content}</p>`).join('')}
+                                    </div>
+                                ` : ''}
+
+                                <div>
+                                    <div class="flex justify-between items-center mb-4">
+                                        <h3 class="text-xl font-bold text-gray-800">Recent Job Opportunities</h3>
+                                        <a href="#/jobs" class="text-primary font-medium hover:underline">View All →</a>
+                                    </div>
+                                    <div class="grid md:grid-cols-3 gap-4">
+                                        ${jobs.map(j => Components.jobCard(j)).join('')}
+                                    </div>
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        browseJobs() {
+            const jobs = DB.get('jobs');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(false)}
+                    <div class="flex-1">
+                        ${Components.header('Browse Jobs')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto">
+                                <div class="bg-white rounded-xl shadow-md p-4 mb-6">
+                                    <div class="grid md:grid-cols-4 gap-4">
+                                        <input type="text" id="searchJobs" placeholder="Search jobs..." class="px-4 py-2 border rounded-lg" oninput="App.filterJobs()">
+                                        <select id="filterIndustry" class="px-4 py-2 border rounded-lg" onchange="App.filterJobs()">
+                                            <option value="">All Industries</option>
+                                            ${INDUSTRIES.map(i => `<option value="${i}">${i}</option>`).join('')}
+                                        </select>
+                                        <select id="filterStatus" class="px-4 py-2 border rounded-lg" onchange="App.filterJobs()">
+                                            <option value="">All Status</option>
+                                            <option value="open">Open</option>
+                                            <option value="closed">Closed</option>
+                                        </select>
+                                        <input type="text" id="filterLocation" placeholder="Location..." class="px-4 py-2 border rounded-lg" oninput="App.filterJobs()">
+                                    </div>
+                                </div>
+                                <div id="jobsList" class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    ${jobs.map(j => Components.jobCard(j)).join('')}
+                                </div>
+                                ${!jobs.length ? '<p class="text-center text-gray-500 py-12">No jobs available at the moment.</p>' : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        myListings() {
+            const listings = DB.get('listings').filter(l => l.user_id === Auth.currentUser.id);
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(false)}
+                    <div class="flex-1">
+                        ${Components.header('My Machines & Services')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto">
+                                <div class="flex justify-between items-center mb-6">
+                                    <p class="text-gray-600">${listings.length} listing(s)</p>
+                                    <button onclick="App.showListingModal()" class="bg-primary hover:bg-amber-600 text-white px-5 py-2 rounded-lg font-medium transition">
+                                        <i class="fas fa-plus mr-2"></i>Add Listing
+                                    </button>
+                                </div>
+                                <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    ${listings.map(l => Components.listingCard(l, true)).join('')}
+                                </div>
+                                ${!listings.length ? `
+                                    <div class="text-center py-12">
+                                        <i class="fas fa-truck text-6xl text-gray-300 mb-4"></i>
+                                        <h3 class="text-xl font-semibold text-gray-600 mb-2">No listings yet</h3>
+                                        <p class="text-gray-500 mb-4">Start by adding your machines and services</p>
+                                        <button onclick="App.showListingModal()" class="bg-primary hover:bg-amber-600 text-white px-6 py-2 rounded-lg">Add Your First Listing</button>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        myApplications() {
+            const applications = DB.get('applications').filter(a => a.user_id === Auth.currentUser.id);
+            const jobs = DB.get('jobs');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(false)}
+                    <div class="flex-1">
+                        ${Components.header('My Applications')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-4xl mx-auto space-y-4">
+                                ${applications.map(app => {
+                                    const job = jobs.find(j => j.id === app.job_id);
+                                    if (!job) return '';
+                                    return `
+                                        <div class="bg-white rounded-xl shadow-md p-5">
+                                            <div class="flex justify-between items-start mb-3">
+                                                <div>
+                                                    <h3 class="font-bold text-lg">${job.title}</h3>
+                                                    <p class="text-gray-500 text-sm">${job.location}</p>
+                                                </div>
+                                                <span class="status-${app.status} px-3 py-1 text-xs font-medium rounded-full">${app.status}</span>
+                                            </div>
+                                            <p class="text-gray-600 text-sm mb-2"><strong>Your message:</strong> ${app.message || 'No message'}</p>
+                                            <p class="text-gray-400 text-xs">Applied ${Utils.timeAgo(app.created_at)}</p>
+                                        </div>
+                                    `;
+                                }).join('')}
+                                ${!applications.length ? `
+                                    <div class="text-center py-12">
+                                        <i class="fas fa-file-alt text-6xl text-gray-300 mb-4"></i>
+                                        <h3 class="text-xl font-semibold text-gray-600">No applications yet</h3>
+                                        <p class="text-gray-500 mb-4">Browse jobs and apply to get started</p>
+                                        <a href="#/jobs" class="bg-primary text-white px-6 py-2 rounded-lg inline-block">Browse Jobs</a>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        profile() {
+            const u = Auth.currentUser;
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(false)}
+                    <div class="flex-1">
+                        ${Components.header('Profile Settings')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-2xl mx-auto">
+                                <div class="bg-white rounded-xl shadow-md p-6">
+                                    <div class="flex items-center gap-4 mb-6">
+                                        <div class="w-20 h-20 bg-primary rounded-full flex items-center justify-center text-white text-3xl font-bold">
+                                            ${u.name.charAt(0)}
+                                        </div>
+                                        <div>
+                                            <h2 class="text-2xl font-bold">${u.name}</h2>
+                                            <p class="text-gray-500">${u.email}</p>
+                                        </div>
+                                    </div>
+                                    <form id="updateProfileForm" class="space-y-4">
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-1">Full Name</label>
+                                            ${Components.input('text', 'name', 'Full Name', u.name, true)}
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                                            ${Components.input('tel', 'phone', 'Phone', u.phone, true)}
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-1">Company</label>
+                                            ${Components.input('text', 'company', 'Company', u.company)}
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-medium text-gray-700 mb-1">Location</label>
+                                            ${Components.input('text', 'location', 'Location', u.location, true)}
+                                        </div>
+                                        <button type="submit" class="w-full bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-semibold">
+                                            Update Profile
+                                        </button>
+                                    </form>
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+
+        // ADMIN PAGES
+        adminDashboard() {
+            const users = DB.get('users');
+            const jobs = DB.get('jobs');
+            const listings = DB.get('listings');
+            const applications = DB.get('applications');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Admin Dashboard')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto space-y-6">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    ${Components.statsCard('users', 'Total Users', users.length, 'blue')}
+                                    ${Components.statsCard('briefcase', 'Active Jobs', jobs.filter(j => j.status === 'open').length, 'green')}
+                                    ${Components.statsCard('list', 'Listings', listings.length, 'purple')}
+                                    ${Components.statsCard('file-alt', 'Applications', applications.length, 'amber')}
+                                </div>
+                                
+                                <div class="grid md:grid-cols-2 gap-6">
+                                    <div class="bg-white rounded-xl shadow-md p-5">
+                                        <h3 class="font-bold text-lg mb-4">Recent Applications</h3>
+                                        <div class="space-y-3">
+                                            ${applications.slice(-5).reverse().map(app => {
+                                                const user = users.find(u => u.id === app.user_id);
+                                                const job = jobs.find(j => j.id === app.job_id);
+                                                return `
+                                                    <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                                                        <div>
+                                                            <p class="font-medium">${user?.name || 'Unknown'}</p>
+                                                            <p class="text-sm text-gray-500">${job?.title || 'Unknown Job'}</p>
+                                                        </div>
+                                                        <span class="status-${app.status} px-2 py-1 text-xs rounded-full">${app.status}</span>
+                                                    </div>
+                                                `;
+                                            }).join('')}
+                                            ${!applications.length ? '<p class="text-gray-500 text-center py-4">No applications yet</p>' : ''}
+                                        </div>
+                                    </div>
+                                    <div class="bg-white rounded-xl shadow-md p-5">
+                                        <h3 class="font-bold text-lg mb-4">Recent Users</h3>
+                                        <div class="space-y-3">
+                                            ${users.slice(-5).reverse().map(u => `
+                                                <div class="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                                                    <div>
+                                                        <p class="font-medium">${u.name}</p>
+                                                        <p class="text-sm text-gray-500">${u.email}</p>
+                                                    </div>
+                                                    <span class="px-2 py-1 text-xs rounded-full ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${u.role}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminJobs() {
+            const jobs = DB.get('jobs');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Manage Jobs')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto">
+                                <div class="flex justify-between items-center mb-6">
+                                    <p class="text-gray-600">${jobs.length} job(s)</p>
+                                    <button onclick="App.showJobModal()" class="bg-primary hover:bg-amber-600 text-white px-5 py-2 rounded-lg font-medium">
+                                        <i class="fas fa-plus mr-2"></i>Post Job
+                                    </button>
+                                </div>
+                                <div class="bg-white rounded-xl shadow-md overflow-hidden">
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Title</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600 hidden md:table-cell">Industry</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600 hidden md:table-cell">Location</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Status</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                ${jobs.map(j => `
+                                                    <tr class="hover:bg-gray-50">
+                                                        <td class="px-4 py-3">
+                                                            <p class="font-medium">${j.title}</p>
+                                                            <p class="text-xs text-gray-500 md:hidden">${j.industry_category}</p>
+                                                        </td>
+                                                        <td class="px-4 py-3 hidden md:table-cell text-sm">${j.industry_category}</td>
+                                                        <td class="px-4 py-3 hidden md:table-cell text-sm">${j.location}</td>
+                                                        <td class="px-4 py-3">
+                                                            <span class="status-${j.status} px-2 py-1 text-xs rounded-full">${j.status}</span>
+                                                        </td>
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex gap-2">
+                                                                <button onclick="App.editJob('${j.id}')" class="p-2 hover:bg-gray-100 rounded-lg" title="Edit"><i class="fas fa-edit text-blue-500"></i></button>
+                                                                <button onclick="App.toggleJobStatus('${j.id}')" class="p-2 hover:bg-gray-100 rounded-lg" title="Toggle Status"><i class="fas fa-toggle-${j.status === 'open' ? 'on text-green-500' : 'off text-gray-400'}"></i></button>
+                                                                <button onclick="App.deleteJob('${j.id}')" class="p-2 hover:bg-gray-100 rounded-lg" title="Delete"><i class="fas fa-trash text-red-500"></i></button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    ${!jobs.length ? '<p class="text-center text-gray-500 py-8">No jobs posted yet</p>' : ''}
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminUsers() {
+            const users = DB.get('users');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Manage Users')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto">
+                                <div class="bg-white rounded-xl shadow-md overflow-hidden">
+                                    <div class="overflow-x-auto">
+                                        <table class="w-full">
+                                            <thead class="bg-gray-50">
+                                                <tr>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">User</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600 hidden md:table-cell">Phone</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600 hidden md:table-cell">Location</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Role</th>
+                                                    <th class="px-4 py-3 text-left text-sm font-semibold text-gray-600">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody class="divide-y">
+                                                ${users.map(u => `
+                                                    <tr class="hover:bg-gray-50">
+                                                        <td class="px-4 py-3">
+                                                            <p class="font-medium">${u.name}</p>
+                                                            <p class="text-xs text-gray-500">${u.email}</p>
+                                                        </td>
+                                                        <td class="px-4 py-3 hidden md:table-cell text-sm">${u.phone || '-'}</td>
+                                                        <td class="px-4 py-3 hidden md:table-cell text-sm">${u.location || '-'}</td>
+                                                        <td class="px-4 py-3">
+                                                            <span class="px-2 py-1 text-xs rounded-full ${u.role === 'admin' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}">${u.role}</span>
+                                                        </td>
+                                                        <td class="px-4 py-3">
+                                                            <div class="flex gap-2">
+                                                                <button onclick="App.toggleUserRole('${u.id}')" class="p-2 hover:bg-gray-100 rounded-lg" title="Toggle Role"><i class="fas fa-user-shield text-purple-500"></i></button>
+                                                                ${u.role !== 'admin' ? `<button onclick="App.deleteUser('${u.id}')" class="p-2 hover:bg-gray-100 rounded-lg" title="Delete"><i class="fas fa-trash text-red-500"></i></button>` : ''}
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                `).join('')}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminListings() {
+            const listings = DB.get('listings');
+            const users = DB.get('users');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('All Listings')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto">
+                                <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                    ${listings.map(l => {
+                                        const user = users.find(u => u.id === l.user_id);
+                                        const photos = DB.get('photos').filter(p => p.listing_id === l.id);
+                                        const mainPhoto = photos?.image_url || 'https://via.placeholder.com/400x300?text=No+Image';
+                                        return `
+                                            <div class="bg-white rounded-xl shadow-md overflow-hidden">
+                                                <img src="${mainPhoto}" class="w-full h-40 object-cover" alt="${l.machine_type}">
+                                                <div class="p-4">
+                                                    <div class="flex justify-between items-start mb-2">
+                                                        <h3 class="font-bold">${l.machine_type}</h3>
+                                                        <span class="text-xs bg-gray-100 px-2 py-1 rounded">${l.industry_category}</span>
+                                                    </div>
+                                                    <p class="text-sm text-gray-500 mb-2">by ${user?.name || 'Unknown'}</p>
+                                                    <p class="text-sm text-gray-600 mb-3">${l.location}</p>
+                                                    <button onclick="App.deleteListingAdmin('${l.id}')" class="w-full bg-red-100 hover:bg-red-200 text-red-600 py-2 rounded-lg text-sm">
+                                                        <i class="fas fa-trash mr-1"></i>Remove Listing
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                                ${!listings.length ? '<p class="text-center text-gray-500 py-12">No listings yet</p>' : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminApplications() {
+            const applications = DB.get('applications');
+            const users = DB.get('users');
+            const jobs = DB.get('jobs');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Applications')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-5xl mx-auto space-y-4">
+                                ${applications.map(app => {
+                                    const user = users.find(u => u.id === app.user_id);
+                                    const job = jobs.find(j => j.id === app.job_id);
+                                    return `
+                                        <div class="bg-white rounded-xl shadow-md p-5">
+                                            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                                <div class="flex-1">
+                                                    <h3 class="font-bold text-lg">${job?.title || 'Unknown Job'}</h3>
+                                                    <p class="text-gray-600">Applicant: <strong>${user?.name || 'Unknown'}</strong> (${user?.email})</p>
+                                                    <p class="text-gray-500 text-sm mt-1">${app.message || 'No message provided'}</p>
+                                                    <p class="text-gray-400 text-xs mt-2">Applied ${Utils.timeAgo(app.created_at)}</p>
+                                                </div>
+                                                <div class="flex items-center gap-2">
+                                                    <span class="status-${app.status} px-3 py-1 text-sm rounded-full">${app.status}</span>
+                                                    ${app.status === 'pending' ? `
+                                                        <button onclick="App.updateAppStatus('${app.id}', 'approved')" class="bg-green-500 hover:bg-green-600 text-white px-3 py-1 rounded-lg text-sm">Approve</button>
+                                                        <button onclick="App.updateAppStatus('${app.id}', 'rejected')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg text-sm">Reject</button>
+                                                    ` : ''}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                                ${!applications.length ? '<p class="text-center text-gray-500 py-12">No applications received yet</p>' : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminNews() {
+            const announcements = DB.get('announcements');
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Announcements')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-4xl mx-auto">
+                                <div class="flex justify-end mb-6">
+                                    <button onclick="App.showAnnouncementModal()" class="bg-primary hover:bg-amber-600 text-white px-5 py-2 rounded-lg font-medium">
+                                        <i class="fas fa-plus mr-2"></i>New Announcement
+                                    </button>
+                                </div>
+                                <div class="space-y-4">
+                                    ${announcements.map(a => `
+                                        <div class="bg-white rounded-xl shadow-md p-5">
+                                            <div class="flex justify-between items-start">
+                                                <div>
+                                                    <h3 class="font-bold text-lg">${a.title}</h3>
+                                                    <p class="text-gray-600 mt-2">${a.content}</p>
+                                                    <p class="text-gray-400 text-xs mt-3">${Utils.formatDate(a.created_at)}</p>
+                                                </div>
+                                                <button onclick="App.deleteAnnouncement('${a.id}')" class="p-2 hover:bg-gray-100 rounded-lg">
+                                                    <i class="fas fa-trash text-red-500"></i>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                                ${!announcements.length ? '<p class="text-center text-gray-500 py-12">No announcements yet</p>' : ''}
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        },
+        adminAnalytics() {
+            const users = DB.get('users');
+            const jobs = DB.get('jobs');
+            const listings = DB.get('listings');
+            const applications = DB.get('applications');
+            
+            const industryStats = {};
+            listings.forEach(l => { industryStats[l.industry_category] = (industryStats[l.industry_category] || 0) + 1; });
+            
+            const appStatusStats = { pending: 0, approved: 0, rejected: 0 };
+            applications.forEach(a => { appStatusStats[a.status] = (appStatusStats[a.status] || 0) + 1; });
+            
+            return `
+                <div class="flex min-h-screen">
+                    ${Components.sidebar(true)}
+                    <div class="flex-1">
+                        ${Components.header('Analytics')}
+                        <main class="p-4 md:p-6 pb-24 md:pb-6">
+                            <div class="max-w-7xl mx-auto space-y-6">
+                                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                    ${Components.statsCard('users', 'Total Users', users.filter(u => u.role === 'user').length, 'blue')}
+                                    ${Components.statsCard('briefcase', 'Total Jobs', jobs.length, 'green')}
+                                    ${Components.statsCard('list', 'Total Listings', listings.length, 'purple')}
+                                    ${Components.statsCard('file-alt', 'Total Applications', applications.length, 'amber')}
+                                </div>
+                                
+                                <div class="grid md:grid-cols-2 gap-6">
+                                    <div class="bg-white rounded-xl shadow-md p-5">
+                                        <h3 class="font-bold text-lg mb-4">Listings by Industry</h3>
+                                        <div class="space-y-3">
+                                            ${Object.entries(industryStats).map(([industry, count]) => `
+                                                <div class="flex items-center gap-3">
+                                                    <div class="flex-1">
+                                                        <div class="flex justify-between mb-1">
+                                                            <span class="text-sm font-medium">${industry}</span>
+                                                            <span class="text-sm text-gray-500">${count}</span>
+                                                        </div>
+                                                        <div class="w-full bg-gray-200 rounded-full h-2">
+                                                            <div class="bg-primary h-2 rounded-full" style="width: ${(count / listings.length) * 100}%"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            `).join('')}
+                                            ${!Object.keys(industryStats).length ? '<p class="text-gray-500 text-center">No data available</p>' : ''}
+                                        </div>
+                                    </div>
+                                    <div class="bg-white rounded-xl shadow-md p-5">
+                                        <h3 class="font-bold text-lg mb-4">Application Status</h3>
+                                        <div class="space-y-3">
+                                            <div class="flex items-center justify-between p-3 bg-yellow-50 rounded-lg">
+                                                <span class="font-medium text-yellow-700">Pending</span>
+                                                <span class="text-2xl font-bold text-yellow-600">${appStatusStats.pending}</span>
+                                            </div>
+                                            <div class="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                                                <span class="font-medium text-green-700">Approved</span>
+                                                <span class="text-2xl font-bold text-green-600">${appStatusStats.approved}</span>
+                                            </div>
+                                            <div class="flex items-center justify-between p-3 bg-red-50 rounded-lg">
+                                                <span class="font-medium text-red-700">Rejected</span>
+                                                <span class="text-2xl font-bold text-red-600">${appStatusStats.rejected}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </main>
+                        ${Components.mobileNav()}
+                    </div>
+                </div>
+            `;
+        }
+    };
+
+    // ============================================
+    // MODALS
+    // ============================================
+    const Modals = {
+        show(content) {
+            const modal = document.getElementById('modal');
+            modal.innerHTML = content;
+            modal.classList.remove('hide');
+        },
+        hide() {
+            document.getElementById('modal').classList.add('hide');
+        },
+        apply(jobId) {
+            const job = DB.get('jobs').find(j => j.id === jobId);
+            return `
+                <div class="bg-white rounded-2xl w-full max-w-lg mx-4 p-6 max-h-[90vh] overflow-y-auto">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">Apply to Job</h2>
+                        <button onclick="Modals.hide()" class="p-2 hover:bg-gray-100 rounded-lg"><i class="fas fa-times"></i></button>
+                    </div>
+                    <p class="text-gray-600 mb-4"><strong>${job.title}</strong></p>
+                    <form id="applyForm" class="space-y-4">
+                        <input type="hidden" name="job_id" value="${jobId}">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Your Message</label>
+                            ${Components.textarea('message', 'Explain why you are a good fit for this job...', '', 5)}
+                        </div>
+                        <div class="flex gap-3">
+                            <button type="button" onclick="Modals.hide()" class="flex-1 bg-gray-100 hover:bg-gray-200 py-3 rounded-lg font-medium">Cancel</button>
+                            <button type="submit" class="flex-1 bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-medium">Submit Application</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        },
+        listing(listing = null) {
+            return `
+                <div class="bg-white rounded-2xl w-full max-w-2xl mx-4 p-6 max-h-[90vh] overflow-y-auto">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">${listing ? 'Edit' : 'Add'} Machine/Service</h2>
+                        <button onclick="Modals.hide()" class="p-2 hover:bg-gray-100 rounded-lg"><i class="fas fa-times"></i></button>
+                    </div>
+                    <form id="listingForm" class="space-y-4">
+                        <input type="hidden" name="id" value="${listing?.id || ''}">
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Machine Type *</label>
+                                ${Components.select('machine_type', MACHINE_TYPES, listing?.machine_type || '', 'Select machine type', true)}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Industry Category *</label>
+                                ${Components.select('industry_category', INDUSTRIES, listing?.industry_category || '', 'Select industry', true)}
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Capabilities *</label>
+                            ${Components.input('text', 'capabilities', 'e.g., 20-ton lifting capacity, GPS equipped', listing?.capabilities || '', true)}
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Location *</label>
+                                ${Components.input('text', 'location', 'City, State', listing?.location || '', true)}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Availability *</label>
+                                ${Components.select('availability', ['Available', 'Unavailable', 'On Job'], listing?.availability || '', 'Select availability', true)}
+                            </div>
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Price Range (optional)</label>
+                            ${Components.input('text', 'price_range', 'e.g., $500-$800/day', listing?.price_range || '')}
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Description</label>
+                            ${Components.textarea('description', 'Detailed description of your machine/service...', listing?.description || '')}
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Photos * (1-10 images)</label>
+                            <input type="file" id="photoUpload" accept="image/jpeg,image/png,image/webp" multiple class="w-full px-4 py-3 border border-gray-300 rounded-lg" ${listing ? '' : 'required'}>
+                            <p class="text-xs text-gray-500 mt-1">JPG, PNG, or WEBP. Max 10 images.</p>
+                            <div id="photoPreview" class="photo-grid mt-3"></div>
+                        </div>
+                        <div class="flex gap-3">
+                            <button type="button" onclick="Modals.hide()" class="flex-1 bg-gray-100 hover:bg-gray-200 py-3 rounded-lg font-medium">Cancel</button>
+                            <button type="submit" class="flex-1 bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-medium">${listing ? 'Update' : 'Create'} Listing</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        },
+        job(job = null) {
+            return `
+                <div class="bg-white rounded-2xl w-full max-w-2xl mx-4 p-6 max-h-[90vh] overflow-y-auto">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">${job ? 'Edit' : 'Post New'} Job</h2>
+                        <button onclick="Modals.hide()" class="p-2 hover:bg-gray-100 rounded-lg"><i class="fas fa-times"></i></button>
+                    </div>
+                    <form id="jobForm" class="space-y-4">
+                        <input type="hidden" name="id" value="${job?.id || ''}">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Job Title *</label>
+                            ${Components.input('text', 'title', 'e.g., Excavation Work for Commercial Building', job?.title || '', true)}
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Description *</label>
+                            ${Components.textarea('description', 'Detailed job description...', job?.description || '', 4)}
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Industry Category *</label>
+                                ${Components.select('industry_category', INDUSTRIES, job?.industry_category || '', 'Select industry', true)}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Required Services *</label>
+                                ${Components.input('text', 'required_services', 'e.g., Excavators, Dump Trucks', job?.required_services || '', true)}
+                            </div>
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Budget (optional)</label>
+                                ${Components.input('text', 'budget', 'e.g., $10,000 - $15,000', job?.budget || '')}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Location *</label>
+                                ${Components.input('text', 'location', 'City, State', job?.location || '', true)}
+                            </div>
+                        </div>
+                        <div class="grid md:grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Deadline *</label>
+                                ${Components.input('date', 'deadline', '', job?.deadline || '', true)}
+                            </div>
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                                ${Components.select('status', ['open', 'closed'], job?.status || 'open', 'Select status')}
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <button type="button" onclick="Modals.hide()" class="flex-1 bg-gray-100 hover:bg-gray-200 py-3 rounded-lg font-medium">Cancel</button>
+                            <button type="submit" class="flex-1 bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-medium">${job ? 'Update' : 'Post'} Job</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        },
+        announcement(ann = null) {
+            return `
+                <div class="bg-white rounded-2xl w-full max-w-lg mx-4 p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="text-xl font-bold">${ann ? 'Edit' : 'New'} Announcement</h2>
+                        <button onclick="Modals.hide()" class="p-2 hover:bg-gray-100 rounded-lg"><i class="fas fa-times"></i></button>
+                    </div>
+                    <form id="announcementForm" class="space-y-4">
+                        <input type="hidden" name="id" value="${ann?.id || ''}">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Title *</label>
+                            ${Components.input('text', 'title', 'Announcement title', ann?.title || '', true)}
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">Content *</label>
+                            ${Components.textarea('content', 'Announcement content...', ann?.content || '', 4)}
+                        </div>
+                        <div class="flex gap-3">
+                            <button type="button" onclick="Modals.hide()" class="flex-1 bg-gray-100 hover:bg-gray-200 py-3 rounded-lg font-medium">Cancel</button>
+                            <button type="submit" class="flex-1 bg-primary hover:bg-amber-600 text-white py-3 rounded-lg font-medium">Publish</button>
+                        </div>
+                    </form>
+                </div>
+            `;
+        },
+        confirm(message, onConfirm) {
+            window.modalConfirmCallback = onConfirm;
+            return `
+                <div class="bg-white rounded-2xl w-full max-w-sm mx-4 p-6 text-center">
+                    <div class="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <i class="fas fa-exclamation-triangle text-red-500 text-2xl"></i>
+                    </div>
+                    <h3 class="text-lg font-bold mb-2">Confirm Action</h3>
+                    <p class="text-gray-600 mb-6">${message}</p>
+                    <div class="flex gap-3">
+                        <button onclick="Modals.hide()" class="flex-1 bg-gray-100 hover:bg-gray-200 py-2 rounded-lg font-medium">Cancel</button>
+                        <button onclick="window.modalConfirmCallback(); Modals.hide();" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 rounded-lg font-medium">Confirm</button>
+                    </div>
+                </div>
+            `;
+        }
+    };
+
+    // ============================================
+    // MAIN APPLICATION
+    // ============================================
+    const App = {
+        uploadedPhotos: [],
+        
+        init() {
+            DB.init();
+            Auth.init();
+            this.setupRoutes();
+            Router.init();
+            this.initGoogleSignIn();
+        },
+        
+        setupRoutes() {
+            // Public routes
+            Router.register('/login', () => this.render(Pages.login(), () => this.setupLoginForm()));
+            Router.register('/register', () => this.render(Pages.register(), () => this.setupRegisterForm()));
+            Router.register('/complete-profile', () => {
+                if (!Auth.isLoggedIn()) return Router.navigate('/login');
+                this.render(Pages.completeProfile(), () => this.setupProfileCompleteForm());
+            });
+            
+            // User routes
+            Router.register('/dashboard', () => this.authGuard(() => this.render(Pages.userDashboard())));
+            Router.register('/jobs', () => this.authGuard(() => this.render(Pages.browseJobs())));
+            Router.register('/my-listings', () => this.authGuard(() => this.render(Pages.myListings())));
+            Router.register('/applications', () => this.authGuard(() => this.render(Pages.myApplications())));
+            Router.register('/profile', () => this.authGuard(() => this.render(Pages.profile(), () => this.setupUpdateProfileForm())));
+            
+            // Admin routes
+            Router.register('/admin', () => this.adminGuard(() => this.render(Pages.adminDashboard())));
+            Router.register('/admin-jobs', () => this.adminGuard(() => this.render(Pages.adminJobs())));
+            Router.register('/admin-users', () => this.adminGuard(() => this.render(Pages.adminUsers())));
+            Router.register('/admin-listings', () => this.adminGuard(() => this.render(Pages.adminListings())));
+            Router.register('/admin-applications', () => this.adminGuard(() => this.render(Pages.adminApplications())));
+            Router.register('/admin-news', () => this.adminGuard(() => this.render(Pages.adminNews())));
+            Router.register('/admin-analytics', () => this.adminGuard(() => this.render(Pages.adminAnalytics())));
+            
+            // Default route
+            Router.register('/', () => {
+                if (!Auth.isLoggedIn()) return Router.navigate('/login');
+                if (!Auth.currentUser.profile_completed) return Router.navigate('/complete-profile');
+                Router.navigate(Auth.isAdmin() ? '/admin' : '/dashboard');
+            });
+        },
+        
+        render(html, callback) {
+            document.getElementById('app').innerHTML = html;
+            if (callback) setTimeout(callback, 0);
+        },
+        
+        authGuard(fn) {
+            if (!Auth.isLoggedIn()) return Router.navigate('/login');
+            if (!Auth.currentUser.profile_completed) return Router.navigate('/complete-profile');
+            if (Auth.isAdmin()) return Router.navigate('/admin');
+            fn();
+        },
+        
+        adminGuard(fn) {
+            if (!Auth.isLoggedIn()) return Router.navigate('/login');
+            if (!Auth.isAdmin()) return Router.navigate('/dashboard');
+            fn();
+        },
+        
+        initGoogleSignIn() {
+            // Simulated Google Sign-In (replace with real OAuth in production)
+            setTimeout(() => {
+                const btn = document.getElementById('googleBtn');
+                if (btn) {
+                    btn.innerHTML = `
+                        <button onclick="App.simulateGoogleSignIn()" class="flex items-center gap-3 px-6 py-3 border-2 border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                            <svg class="w-5 h-5" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                            <span class="font-medium text-gray-700">Continue with Google</span>
+                        </button>
+                    `;
+                }
+            }, 100);
+        },
+        
+        simulateGoogleSignIn() {
+            const email = prompt('Enter your Google email:');
+            if (!email) return;
+            const name = email.split('@').replace(/[._]/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+            const result = Auth.googleSignIn({ email, name, sub: 'google_' + Date.now() });
+            if (result.success) {
+                Utils.notify('Google sign-in successful!');
+                Router.navigate(result.needsProfile ? '/complete-profile' : (Auth.isAdmin() ? '/admin' : '/dashboard'));
+            }
+        },
+        
+        setupLoginForm() {
+            this.initGoogleSignIn();
+            document.getElementById('loginForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                const result = Auth.login(form.get('email'), form.get('password'));
+                if (result.success) {
+                    Utils.notify('Login successful!');
+                    Router.navigate(Auth.isAdmin() ? '/admin' : '/dashboard');
+                } else {
+                    Utils.notify(result.error, 'error');
+                }
+            });
+        },
+        
+        setupRegisterForm() {
+            document.getElementById('registerForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                if (form.get('password').length < 6) {
+                    return Utils.notify('Password must be at least 6 characters', 'error');
+                }
+                const result = Auth.register({
+                    name: form.get('name'),
+                    email: form.get('email'),
+                    password: form.get('password'),
+                    phone: form.get('phone'),
+                    company: form.get('company'),
+                    location: form.get('location')
+                });
+                if (result.success) {
+                    Utils.notify('Account created successfully!');
+                    Router.navigate('/dashboard');
+                } else {
+                    Utils.notify(result.error, 'error');
+                }
+            });
+        },
+        
+        setupProfileCompleteForm() {
+            document.getElementById('profileForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                Auth.completeProfile({
+                    name: form.get('name'),
+                    phone: form.get('phone'),
+                    company: form.get('company'),
+                    location: form.get('location')
+                });
+                Utils.notify('Profile completed!');
+                Router.navigate('/dashboard');
+            });
+        },
+        
+        setupUpdateProfileForm() {
+            document.getElementById('updateProfileForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                Auth.completeProfile({
+                    name: form.get('name'),
+                    phone: form.get('phone'),
+                    company: form.get('company'),
+                    location: form.get('location')
+                });
+                Utils.notify('Profile updated!');
+            });
+        },
+        
+        logout() {
+            Auth.logout();
+            Utils.notify('Logged out successfully');
+            Router.navigate('/login');
+        },
+        
+        // Job functions
+        filterJobs() {
+            const search = document.getElementById('searchJobs')?.value.toLowerCase() || '';
+            const industry = document.getElementById('filterIndustry')?.value || '';
+            const status = document.getElementById('filterStatus')?.value || '';
+            const location = document.getElementById('filterLocation')?.value.toLowerCase() || '';
+            
+            let jobs = DB.get('jobs');
+            if (search) jobs = jobs.filter(j => j.title.toLowerCase().includes(search) || j.description.toLowerCase().includes(search));
+            if (industry) jobs = jobs.filter(j => j.industry_category === industry);
+            if (status) jobs = jobs.filter(j => j.status === status);
+            if (location) jobs = jobs.filter(j => j.location.toLowerCase().includes(location));
+            
+            document.getElementById('jobsList').innerHTML = jobs.map(j => Components.jobCard(j)).join('') || '<p class="text-center text-gray-500 py-8 col-span-full">No jobs match your criteria</p>';
+        },
+        
+        showApplyModal(jobId) {
+            if (!Auth.canPost()) {
+                Utils.notify('Please complete your profile first', 'warning');
+                return Router.navigate('/complete-profile');
+            }
+            const existing = DB.get('applications').find(a => a.job_id === jobId && a.user_id === Auth.currentUser.id);
+            if (existing) {
+                return Utils.notify('You have already applied to this job', 'info');
+            }
+            Modals.show(Modals.apply(jobId));
+            document.getElementById('applyForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                const apps = DB.get('applications');
+                apps.push({
+                    id: DB.generateId(),
+                    job_id: form.get('job_id'),
+                    user_id: Auth.currentUser.id,
+                    message: form.get('message'),
+                    status: 'pending',
+                    created_at: new Date().toISOString()
+                });
+                DB.set('applications', apps);
+                Modals.hide();
+                Utils.notify('Application submitted successfully!');
+            });
+        },
+        
+        showJobModal(job = null) {
+            Modals.show(Modals.job(job));
+            document.getElementById('jobForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                const jobs = DB.get('jobs');
+                const data = {
+                    title: form.get('title'),
+                    description: form.get('description'),
+                    industry_category: form.get('industry_category'),
+                    required_services: form.get('required_services'),
+                    budget: form.get('budget'),
+                    location: form.get('location'),
+                    deadline: form.get('deadline'),
+                    status: form.get('status') || 'open'
+                };
+                if (form.get('id')) {
+                    const idx = jobs.findIndex(j => j.id === form.get('id'));
+                    if (idx !== -1) jobs[idx] = { ...jobs[idx], ...data };
+                } else {
+                    jobs.push({ id: DB.generateId(), ...data, created_at: new Date().toISOString() });
+                }
+                DB.set('jobs', jobs);
+                Modals.hide();
+                Utils.notify(form.get('id') ? 'Job updated!' : 'Job posted!');
+                Router.navigate('/admin-jobs');
+            });
+        },
+        
+        editJob(id) {
+            const job = DB.get('jobs').find(j => j.id === id);
+            if (job) this.showJobModal(job);
+        },
+        
+        deleteJob(id) {
+            Modals.show(Modals.confirm('Are you sure you want to delete this job?', () => {
+                const jobs = DB.get('jobs').filter(j => j.id !== id);
+                DB.set('jobs', jobs);
+                Utils.notify('Job deleted');
+                Router.navigate('/admin-jobs');
+            }));
+        },
+        
+        toggleJobStatus(id) {
+            const jobs = DB.get('jobs');
+            const idx = jobs.findIndex(j => j.id === id);
+            if (idx !== -1) {
+                jobs[idx].status = jobs[idx].status === 'open' ? 'closed' : 'open';
+                DB.set('jobs', jobs);
+                Utils.notify('Job status updated');
+                Router.navigate('/admin-jobs');
+            }
+        },
+        
+        // Listing functions
+        showListingModal(listing = null) {
+            if (!Auth.canPost()) {
+                Utils.notify('Please complete your profile first', 'warning');
+                return Router.navigate('/complete-profile');
+            }
+            this.uploadedPhotos = [];
+            Modals.show(Modals.listing(listing));
+            
+            // Load existing photos if editing
+            if (listing) {
+                const photos = DB.get('photos').filter(p => p.listing_id === listing.id);
+                this.uploadedPhotos = photos.map(p => p.image_url);
+                this.updatePhotoPreview();
+            }
+            
+            document.getElementById('photoUpload')?.addEventListener('change', async (e) => {
+                const files = Array.from(e.target.files).slice(0, 10);
+                for (const file of files) {
+                    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                        Utils.notify('Invalid file type: ' + file.name, 'error');
+                        continue;
+                    }
+                    if (this.uploadedPhotos.length >= 10) break;
+                    const compressed = await Utils.compressImage(file);
+                    this.uploadedPhotos.push(compressed);
+                }
+                this.updatePhotoPreview();
+            });
+            
+            document.getElementById('listingForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                if (this.uploadedPhotos.length === 0 && !listing) {
+                    return Utils.notify('Please upload at least one photo', 'error');
+                }
+                const form = new FormData(e.target);
+                const listings = DB.get('listings');
+                const photos = DB.get('photos');
+                const data = {
+                    user_id: Auth.currentUser.id,
+                    machine_type: form.get('machine_type'),
+                    industry_category: form.get('industry_category'),
+                    capabilities: form.get('capabilities'),
+                    location: form.get('location'),
+                    availability: form.get('availability'),
+                    price_range: form.get('price_range'),
+                    description: form.get('description')
+                };
+                
+                let listingId;
+                if (form.get('id')) {
+                    listingId = form.get('id');
+                    const idx = listings.findIndex(l => l.id === listingId);
+                    if (idx !== -1) listings[idx] = { ...listings[idx], ...data };
+                    // Remove old photos
+                    const newPhotos = photos.filter(p => p.listing_id !== listingId);
+                    DB.set('photos', newPhotos);
+                } else {
+                    listingId = DB.generateId();
+                    listings.push({ id: listingId, ...data, created_at: new Date().toISOString() });
+                }
+                DB.set('listings', listings);
+                
+                // Save photos
+                const currentPhotos = DB.get('photos');
+                this.uploadedPhotos.forEach(url => {
+                    currentPhotos.push({
+                        id: DB.generateId(),
+                        listing_id: listingId,
+                        image_url: url,
+                        uploaded_at: new Date().toISOString()
+                    });
+                });
+                DB.set('photos', currentPhotos);
+                
+                Modals.hide();
+                Utils.notify(form.get('id') ? 'Listing updated!' : 'Listing created!');
+                Router.navigate('/my-listings');
+            });
+        },
+        
+        updatePhotoPreview() {
+            const container = document.getElementById('photoPreview');
+            if (container) {
+                container.innerHTML = this.uploadedPhotos.map((url, i) => `
+                    <div class="relative group">
+                        <img src="${url}" class="w-full h-24 object-cover rounded-lg">
+                        <button type="button" onclick="App.removePhoto(${i})" class="absolute top-1 right-1 w-6 h-6 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition">
+                            <i class="fas fa-times text-xs"></i>
+                        </button>
+                    </div>
+                `).join('');
+            }
+        },
+        
+        removePhoto(index) {
+            this.uploadedPhotos.splice(index, 1);
+            this.updatePhotoPreview();
+        },
+        
+        editListing(id) {
+            const listing = DB.get('listings').find(l => l.id === id);
+            if (listing) this.showListingModal(listing);
+        },
+        
+        deleteListing(id) {
+            Modals.show(Modals.confirm('Are you sure you want to delete this listing?', () => {
+                const listings = DB.get('listings').filter(l => l.id !== id);
+                const photos = DB.get('photos').filter(p => p.listing_id !== id);
+                DB.set('listings', listings);
+                DB.set('photos', photos);
+                Utils.notify('Listing deleted');
+                Router.navigate('/my-listings');
+            }));
+        },
+        
+        deleteListingAdmin(id) {
+            Modals.show(Modals.confirm('Are you sure you want to remove this listing?', () => {
+                const listings = DB.get('listings').filter(l => l.id !== id);
+                const photos = DB.get('photos').filter(p => p.listing_id !== id);
+                DB.set('listings', listings);
+                DB.set('photos', photos);
+                Utils.notify('Listing removed');
+                Router.navigate('/admin-listings');
+            }));
+        },
+        
+        // User management
+        toggleUserRole(id) {
+            const users = DB.get('users');
+            const idx = users.findIndex(u => u.id === id);
+            if (idx !== -1) {
+                users[idx].role = users[idx].role === 'admin' ? 'user' : 'admin';
+                DB.set('users', users);
+                Utils.notify('User role updated');
+                Router.navigate('/admin-users');
+            }
+        },
+        
+        deleteUser(id) {
+            Modals.show(Modals.confirm('Are you sure you want to delete this user?', () => {
+                const users = DB.get('users').filter(u => u.id !== id);
+                DB.set('users', users);
+                Utils.notify('User deleted');
+                Router.navigate('/admin-users');
+            }));
+        },
+        
+        // Application management
+        updateAppStatus(id, status) {
+            const apps = DB.get('applications');
+            const idx = apps.findIndex(a => a.id === id);
+            if (idx !== -1) {
+                apps[idx].status = status;
+                DB.set('applications', apps);
+                Utils.notify(`Application ${status}`);
+                Router.navigate('/admin-applications');
+            }
+        },
+        
+        // Announcements
+        showAnnouncementModal(ann = null) {
+            Modals.show(Modals.announcement(ann));
+            document.getElementById('announcementForm')?.addEventListener('submit', (e) => {
+                e.preventDefault();
+                const form = new FormData(e.target);
+                const announcements = DB.get('announcements');
+                const data = {
+                    title: form.get('title'),
+                    content: form.get('content')
+                };
+                if (form.get('id')) {
+                    const idx = announcements.findIndex(a => a.id === form.get('id'));
+                    if (idx !== -1) announcements[idx] = { ...announcements[idx], ...data };
+                } else {
+                    announcements.push({ id: DB.generateId(), ...data, created_at: new Date().toISOString() });
+                }
+                DB.set('announcements', announcements);
+                Modals.hide();
+                Utils.notify('Announcement published!');
+                Router.navigate('/admin-news');
+            });
+        },
+        
+        deleteAnnouncement(id) {
+            Modals.show(Modals.confirm('Delete this announcement?', () => {
+                const announcements = DB.get('announcements').filter(a => a.id !== id);
+                DB.set('announcements', announcements);
+                Utils.notify('Announcement deleted');
+                Router.navigate('/admin-news');
+            }));
+        }
+    };
+
+    // Initialize app
+    document.addEventListener('DOMContentLoaded', () => App.init());
+    </script>
+</body>
+</html>
